@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archery Love Game</title>
+    <!-- Tailwind CSS for modern responsive styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #0f0c29, #302b63, #24243e);
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+        .floating-message {
+            position: absolute;
+            pointer-events: none;
+            animation: floatUp 4s ease-out forwards;
+            font-weight: 800;
+            letter-spacing: 2px;
+            text-shadow: 0 4px 15px rgba(255,105,180,0.6);
+        }
+        @keyframes floatUp {
+            0% { opacity: 0; transform: translateY(20px) scale(0.8); }
+            20% { opacity: 1; transform: translateY(0px) scale(1); }
+            80% { opacity: 1; transform: translateY(-40px) scale(1); }
+            100% { opacity: 0; transform: translateY(-80px) scale(1.1); }
+        }
+        .hit-text {
+            position: absolute;
+            pointer-events: none;
+            animation: hitPop 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            font-weight: 900;
+            color: #ff3366;
+            text-shadow: 0 0 20px rgba(255, 51, 102, 0.8), 0 0 40px rgba(255,255,255,0.6);
+        }
+        @keyframes hitPop {
+            0% { transform: scale(0.3) rotate(-10deg); opacity: 0; }
+            50% { transform: scale(1.3) rotate(5deg); opacity: 1; }
+            100% { transform: scale(1) rotate(0deg); opacity: 0; }
+        }
+    </style>
+</head>
+<body class="relative w-screen h-screen">
+
+    <!-- HUD / Score Board -->
+    <div class="absolute top-4 left-6 z-10 text-white font-bold pointer-events-none drop-shadow-md">
+        <div class="text-xl md:text-2xl tracking-wide">Score: <span id="scoreDisplay" class="text-pink-400">0</span></div>
+        <div class="text-sm md:text-md opacity-80 mt-1">High Score: <span id="highScoreDisplay" class="text-yellow-300">28000</span></div>
+        <div id="timerDisplay" class="text-xs md:text-sm text-cyan-300 mt-1">00:58</div>
+    </div>
+
+    <!-- UI Overlay for Messages container -->
+    <div id="uiContainer" class="absolute inset-0 pointer-events-none overflow-hidden"></div>
+
+    <!-- Game Canvas -->
+    <canvas id="gameCanvas" class="w-full h-full"></canvas>
+
+    <!-- Instructions Overlay -->
+    <div id="instructions" class="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 bg-black/40 backdrop-blur-md px-6 py-3 rounded-full border border-white/10 text-white text-xs md:text-sm text-center pointer-events-none shadow-2xl">
+        Click & Drag from the bow on the left, aim with the trajectory arc, and release to shoot! 🎯✨
+    </div>
+
+    <script>
+        // Canvas setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const highScoreDisplay = document.getElementById('highScoreDisplay');
+        const uiContainer = document.getElementById('uiContainer');
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Game State
+        let score = 0;
+        let highScore = parseInt(localStorage.getItem('archery_highscore') || '28000');
+        highScoreDisplay.textContent = highScore;
+
+        // Background elements (Stars & Moon)
+        const stars = [];
+        for (let i = 0; i < 100; i++) {
+            stars.push({
+                x: Math.random() * window.innerWidth,
+                y: Math.random() * window.innerHeight * 0.7,
+                radius: Math.random() * 1.5 + 0.5,
+                alpha: Math.random(),
+                speed: Math.random() * 0.02 + 0.005
+            });
+        }
+
+        // Floating Romantic Messages background list
+        const backgroundPhrases = ["LOVE YOU", "MISS YOU", "ALWAYS", "FOREVER", "MY HEART"];
+        let nextMessageTimer = 0;
+
+        function spawnFloatingMessage(text, x, y, customClass = 'floating-message text-pink-300/80 text-xl md:text-3xl') {
+            const el = document.createElement('div');
+            el.className = customClass;
+            el.innerText = text;
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            uiContainer.appendChild(el);
+            setTimeout(() => el.remove(), 4000);
+        }
+
+        // Bow & Arrow Physics variables
+        const bowPos = { x: 120, y: window.innerHeight * 0.65 };
+        let isAiming = false;
+        let dragStart = { x: 0, y: 0 };
+        let dragCurrent = { x: 0, y: 0 };
+
+        // Active arrow in flight
+        let activeArrow = null;
+
+        // Moving Target
+        const target = {
+            x: window.innerWidth - 150,
+            y: window.innerHeight * 0.4,
+            radius: 45,
+            baseY: window.innerHeight * 0.4,
+            amplitude: 120,
+            frequency: 0.0015,
+            timeOffset: 0
+        };
+
+        // Event Listeners for Aiming (Mouse & Touch)
+        function getPointerPos(e) {
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: clientX, y: clientY };
+        }
+
+        function onPointerDown(e) {
+            if (activeArrow) return; // Wait for current arrow
+            const pos = getPointerPos(e);
+            // Check if clicking near bow
+            const dist = Math.hypot(pos.x - bowPos.x, pos.y - bowPos.y);
+            if (dist < 120) {
+                isAiming = true;
+                dragStart = { x: bowPos.x, y: bowPos.y };
+                dragCurrent = pos;
+            }
+        }
+
+        function onPointerMove(e) {
+            if (!isAiming) return;
+            dragCurrent = getPointerPos(e);
+            // Limit pull distance
+            const dx = dragCurrent.x - dragStart.x;
+            const dy = dragCurrent.y - dragStart.y;
+            const dist = Math.hypot(dx, dy);
+            const maxPull = 120;
+            if (dist > maxPull) {
+                dragCurrent.x = dragStart.x + (dx / dist) * maxPull;
+                dragCurrent.y = dragStart.y + (dy / dist) * maxPull;
+            }
+        }
+
+        function onPointerUp(e) {
+            if (!isAiming) return;
+            isAiming = false;
+
+            // Calculate velocity vector based on pull-back
+            const pullX = dragStart.x - dragCurrent.x;
+            const pullY = dragStart.y - dragCurrent.y;
+            const powerMultiplier = 0.18;
+
+            const vx = pullX * powerMultiplier;
+            const vy = pullY * powerMultiplier;
+
+            // Only shoot if pulled enough
+            if (Math.hypot(vx, vy) > 2) {
+                activeArrow = {
+                    x: bowPos.x,
+                    y: bowPos.y,
+                    vx: vx,
+                    vy: vy,
+                    gravity: 0.25,
+                    rotation: Math.atan2(vy, vx),
+                    trail: []
+                };
+            }
+        }
+
+        window.addEventListener('mousedown', onPointerDown);
+        window.addEventListener('mousemove', onPointerMove);
+        window.addEventListener('mouseup', onPointerUp);
+
+        window.addEventListener('touchstart', onPointerDown, { passive: true });
+        window.addEventListener('touchmove', onPointerMove, { passive: true });
+        window.addEventListener('touchend', onPointerUp, { passive: true });
+
+        // Main Animation & Render Loop
+        function gameLoop(timestamp) {
+            // Clear screen
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Update Bow position if window resizes
+            bowPos.x = Math.min(120, canvas.width * 0.15);
+            bowPos.y = canvas.height * 0.65;
+
+            // 1. Draw Starry Sky & Moon
+            stars.forEach(star => {
+                star.alpha += star.speed;
+                if (star.alpha > 1 || star.alpha < 0.2) star.speed = -star.speed;
+                ctx.fillStyle = `rgba(255, 255, 255, ${Math.abs(star.alpha)})`;
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Big Glowing Moon
+            const moonX = canvas.width - 180;
+            const moonY = 120;
+            const moonGrad = ctx.createRadialGradient(moonX, moonY, 10, moonX, moonY, 60);
+            moonGrad.addColorStop(0, 'rgba(255, 255, 220, 0.9)');
+            moonGrad.addColorStop(0.5, 'rgba(255, 200, 150, 0.4)');
+            moonGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = moonGrad;
+            ctx.beginPath();
+            ctx.arc(moonX, moonY, 60, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Periodic background romantic messages
+            nextMessageTimer++;
+            if (nextMessageTimer > 250) {
+                nextMessageTimer = 0;
+                const randomPhrase = backgroundPhrases[Math.floor(Math.random() * backgroundPhrases.length)];
+                const rx = canvas.width * 0.3 + Math.random() * (canvas.width * 0.4);
+                const ry = canvas.height * 0.2 + Math.random() * (canvas.height * 0.3);
+                spawnFloatingMessage(randomPhrase, rx, ry);
+            }
+
+            // 2. Update & Draw Moving Target (Bullseye)
+            target.timeOffset += target.frequency;
+            target.x = canvas.width - 150;
+            target.baseY = canvas.height * 0.35;
+            target.amplitude = canvas.height * 0.2;
+            target.y = target.baseY + Math.sin(target.timeOffset * 2) * target.amplitude;
+
+            // Draw Target Rings
+            const ringColors = ['#ffffff', '#ff3366', '#ffffff', '#ff3366', '#ffffff'];
+            const ringRadii = [target.radius, target.radius * 0.8, target.radius * 0.6, target.radius * 0.4, target.radius * 0.2];
+            
+            ringRadii.forEach((r, idx) => {
+                ctx.fillStyle = ringColors[idx];
+                ctx.beginPath();
+                ctx.arc(target.x, target.y, r, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#222';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            });
+            // Bullseye center dot
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath();
+            ctx.arc(target.x, target.y, target.radius * 0.08, 0, Math.PI * 2);
+            ctx.fill();
+
+
+            // 3. Draw Bow & String
+            ctx.save();
+            ctx.translate(bowPos.x, bowPos.y);
+            
+            // Draw Bow arc
+            ctx.strokeStyle = '#e2e8f0';
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.arc(0, 0, 75, -Math.PI * 0.55, Math.PI * 0.55, false);
+            ctx.stroke();
+
+            // Draw Bow String
+            let stringPullX = 0;
+            let stringPullY = 0;
+            if (isAiming) {
+                const localDragX = dragCurrent.x - bowPos.x;
+                const localDragY = dragCurrent.y - bowPos.y;
+                stringPullX = Math.min(0, localDragX); // Pull backwards (left)
+                stringPullY = localDragY;
+            }
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            const topTipX = Math.cos(-Math.PI * 0.55) * 75;
+            const topTipY = Math.sin(-Math.PI * 0.55) * 75;
+            const botTipX = Math.cos(Math.PI * 0.55) * 75;
+            const botTipY = Math.sin(Math.PI * 0.55) * 75;
+
+            ctx.moveTo(topTipX, topTipY);
+            ctx.lineTo(stringPullX, stringPullY);
+            ctx.lineTo(botTipX, botTipY);
+            ctx.stroke();
+
+            // If aiming, draw Arrow on the bow & trajectory prediction dots
+            if (isAiming) {
+                // Arrow nocked on bow
+                ctx.save();
+                const aimAngle = Math.atan2(stringPullY, stringPullX - 20);
+                ctx.rotate(aimAngle);
+                ctx.fillStyle = '#cbd5e1';
+                ctx.fillRect(stringPullX, -3, 90, 6);
+                // Arrowhead
+                ctx.fillStyle = '#f8fafc';
+                ctx.beginPath();
+                ctx.moveTo(stringPullX + 90, -8);
+                ctx.lineTo(stringPullX + 105, 0);
+                ctx.lineTo(stringPullX + 90, 8);
+                ctx.fill();
+                ctx.restore();
+
+                // Trajectory Prediction Dots
+                const pullX = dragStart.x - dragCurrent.x;
+                const pullY = dragStart.y - dragCurrent.y;
+                const powerMultiplier = 0.18;
+                let simVx = pullX * powerMultiplier;
+                let simVy = pullY * powerMultiplier;
+                let simX = bowPos.x;
+                let simY = bowPos.y;
+
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                for (let d = 0; d < 25; d++) {
+                    simX += simVx;
+                    simY += simVy;
+                    simVy += 0.25; // gravity
+                    ctx.beginPath();
+                    ctx.arc(simX, simY, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            ctx.restore();
+
+
+            // 4. Update & Draw Active Flying Arrow
+            if (activeArrow) {
+                activeArrow.x += activeArrow.vx;
+                activeArrow.y += activeArrow.vy;
+                activeArrow.vy += activeArrow.gravity;
+                activeArrow.rotation = Math.atan2(activeArrow.vy, activeArrow.vx);
+
+                // Add to trail
+                activeArrow.trail.push({ x: activeArrow.x, y: activeArrow.y });
+                if (activeArrow.trail.length > 15) activeArrow.trail.shift();
+
+                // Draw trail
+                ctx.strokeStyle = 'rgba(255, 105, 180, 0.4)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                for (let t = 0; t < activeArrow.trail.length; t++) {
+                    const pt = activeArrow.trail[t];
+                    if (t === 0) ctx.moveTo(pt.x, pt.y);
+                    else ctx.lineTo(pt.x, pt.y);
+                }
+                ctx.stroke();
+
+                // Draw Arrow
+                ctx.save();
+                ctx.translate(activeArrow.x, activeArrow.y);
+                ctx.rotate(activeArrow.rotation);
+                ctx.fillStyle = '#f8fafc';
+                ctx.fillRect(-45, -3, 90, 6);
+                // Arrowhead
+                ctx.beginPath();
+                ctx.moveTo(45, -8);
+                ctx.lineTo(60, 0);
+                ctx.lineTo(45, 8);
+                ctx.fill();
+                ctx.restore();
+
+                // Check collision with Target
+                const hitDist = Math.hypot(activeArrow.x - target.x, activeArrow.y - target.y);
+                if (hitDist < target.radius + 10) {
+                    // HIT! Calculate points based on distance from center
+                    const accuracy = Math.max(50, Math.round(100 - (hitDist / target.radius) * 50));
+                    score += accuracy * 10;
+                    scoreDisplay.textContent = score;
+
+                    if (score > highScore) {
+                        highScore = score;
+                        highScoreDisplay.textContent = highScore;
+                        localStorage.setItem('archery_highscore', highScore);
+                    }
+
+                    // Spawn HIT! popup animation on screen
+                    const hitEl = document.createElement('div');
+                    hitEl.className = 'hit-text text-3xl md:text-5xl';
+                    hitEl.innerText = accuracy > 90 ? 'BULLSEYE! 💖' : 'HIT! ✨';
+                    hitEl.style.left = `${activeArrow.x - 40}px`;
+                    hitEl.style.top = `${activeArrow.y - 40}px`;
+                    uiContainer.appendChild(hitEl);
+                    setTimeout(() => hitEl.remove(), 800);
+
+                    // Spawn romantic celebration text
+                    spawnFloatingMessage("LOVE YOU", target.x - 50, target.y - 70, 'floating-message text-pink-400 text-2xl md:text-4xl');
+
+                    activeArrow = null;
+                }
+
+                // Out of bounds check
+                if (activeArrow && (activeArrow.x > canvas.width + 100 || activeArrow.y > canvas.height + 100 || activeArrow.x < -100)) {
+                    activeArrow = null;
+                }
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
